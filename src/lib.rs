@@ -60,10 +60,15 @@ pub enum BrevduvaError {
 }
 
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> SyncedContainer<T> {
-    fn new(id: usize, data: T, queue: tokio::sync::mpsc::Sender<QueueMessage>) -> Self {
+    fn new(
+        id: usize,
+        topic: String,
+        data: T,
+        queue: tokio::sync::mpsc::Sender<QueueMessage>,
+    ) -> Self {
         Self {
             id,
-            topic: format!("sync/{}", std::any::type_name::<T>()),
+            topic,
             data: Mutex::new(Some(data)),
             queue,
             up_to_date: blocker::Blocker::new(),
@@ -248,17 +253,19 @@ impl SyncStorage {
         T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static,
     >(
         &self,
-        name: String,
+        name: &str,
         inital: T,
     ) -> Result<Arc<SyncedContainer<T>>, BrevduvaError> {
+        let topic = format!("sync/{}", name);
         let container = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.containers.iter().any(|c| c.topic() == name) {
-                return Err(BrevduvaError::ContainerAlreadyExists(name));
+            if inner.containers.iter().any(|c| c.topic() == topic) {
+                return Err(BrevduvaError::ContainerAlreadyExists(name.to_string()));
             }
 
             let container = Arc::new(SyncedContainer::new(
                 inner.containers.len(),
+                topic,
                 inital,
                 inner.queue_sender.clone(),
             ));
