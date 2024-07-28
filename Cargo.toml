@@ -1,5 +1,5 @@
 [package]
-name = "mqtt_sync"
+name = "brevduva"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
@@ -17,10 +17,10 @@ edge-mqtt = { git = "https://github.com/ivmarkov/edge-net.git", package = "edge-
 
 [features]
 default = []
-embedded = ["esp-idf-svc", "esp-idf-svc/native", "std"]
+embedded = ["esp-idf-svc", "esp-idf-svc/native", "std", "embuild"]
 pc = ["edge-mqtt"]
 std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std"]
 alloc = ["esp-idf-svc/alloc"]
 
 [build-dependencies]
-embuild = "0.32"
+embuild = { version = "0.32", optional = true }
