@@ -410,6 +410,7 @@ dependencies = [
 [[package]]
 name = "edge-mqtt"
 version = "0.2.0"
+source = "git+https://github.com/ivmarkov/edge-net.git#e846ff7be32e6376f814723ebf9d97534140bdfb"
 dependencies = [
  "embedded-svc",
  "log",
@@ -593,6 +594,8 @@ dependencies = [
 [[package]]
 name = "esp-idf-hal"
 version = "0.44.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfa893ab84c4a7db5ca42ab45e2e09942412976fe3100a9dd72e56ba0a9a58b4"
 dependencies = [
  "atomic-waker",
  "embassy-sync",
@@ -615,6 +618,8 @@ dependencies = [
 [[package]]
 name = "esp-idf-svc"
 version = "0.49.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac42f9303792348e3217c570b0f0d8280a381d053bcb730c3018ec6873928513"
 dependencies = [
  "embassy-futures",
  "embedded-hal-async",

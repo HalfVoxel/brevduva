@@ -11,7 +11,7 @@ embedded-svc = "0.28"
 log = "0.4"
 serde_json = "1"
 serde = "1"
-edge-mqtt = { path = "../edge-net/edge-mqtt", features = [
+edge-mqtt = { git = "https://github.com/ivmarkov/edge-net.git", package = "edge-mqtt", features = [
     "embedded-svc",
 ], optional = true }
 
@@ -24,9 +24,3 @@ alloc = ["esp-idf-svc/alloc"]
 
 [build-dependencies]
 embuild = "0.32"
-
-[patch.crates-io.esp-idf-svc]
-path = "../esp-idf-svc"
-
-[patch.crates-io.esp-idf-hal]
-path = "../esp-idf-hal"
