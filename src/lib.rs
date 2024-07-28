@@ -28,7 +28,7 @@ struct SyncStorageInner {
 
 trait Container: Send + Sync + 'static {
     fn topic(&self) -> &str;
-    fn on_message(&self, payload: &[u8]);
+    fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError>;
     fn serialize(&self) -> String;
     fn has_received_message(&self) -> bool;
     fn up_to_date(&self) -> &blocker::Blocker;
@@ -58,6 +58,8 @@ pub struct SyncedContainer<T> {
 pub enum BrevduvaError {
     #[error("A container with the name \"{0}\" already exists")]
     ContainerAlreadyExists(String),
+    #[error("Failed to deserialize message")]
+    MessageDeserialize(#[from] serde_json::Error),
 }
 
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> SyncedContainer<T> {
@@ -129,12 +131,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
         &self.up_to_date
     }
 
-    fn on_message(&self, payload: &[u8]) {
-        let d = serde_json::from_slice(payload).unwrap();
+    fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError> {
+        let d = serde_json::from_slice(payload).map_err(BrevduvaError::MessageDeserialize)?;
         let mut data = self.data.lock().unwrap();
         *data = Some(d);
         println!("Received message: {:?}", data);
         *self.has_received_message.lock().unwrap() = true;
+        Ok(())
     }
 
     fn has_received_message(&self) -> bool {
@@ -329,7 +332,13 @@ impl SyncStorage {
                         ..
                     } => {
                         if topic == META_TOPIC {
-                            let meta: MetaMessage = serde_json::from_slice(data).unwrap();
+                            let meta: MetaMessage = match serde_json::from_slice(data) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    error!("Failed to parse meta message: {e:?}");
+                                    continue;
+                                }
+                            };
                             match meta {
                                 MetaMessage::ReceivedAllMessages { client, topic } => {
                                     if *client_id != client {
@@ -378,11 +387,9 @@ impl SyncStorage {
                             };
                             match container {
                                 Some(container) => {
-                                    info!("Received message on topic \"{}\"", topic);
-                                    container.on_message(data);
-
-                                    // Should already be unblocked, but just in case
-                                    // container.up_to_date().unblock().await;
+                                    if let Err(e) = container.on_message(data) {
+                                        error!("{e}. Ignoring message");
+                                    }
                                 }
                                 None => {
                                     warn!("Received message on unknown topic: \"{}\"", topic);
