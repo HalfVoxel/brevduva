@@ -1,6 +1,8 @@
 // #![deny(clippy::future_not_send)]
 mod blocker;
 
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -12,7 +14,7 @@ use embedded_svc::mqtt::client::QoS;
 #[cfg(feature = "embedded")]
 use esp_idf_svc::mqtt::client::{EspAsyncMqttClient, MqttClientConfiguration};
 use log::trace;
-use log::{error, info, warn};
+use log::{error, warn};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::pin::pin;
 
@@ -65,7 +67,7 @@ pub enum BrevduvaError {
     MessageDeserialize(#[from] serde_json::Error),
 }
 
-impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> SyncedContainer<T> {
+impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> SyncedContainer<T> {
     fn new(
         id: usize,
         topic: String,
@@ -111,6 +113,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> SyncedContainer<T>
     pub async fn set(&self, data: T) {
         {
             let mut d = self.data.lock().unwrap();
+            let mut hash1 = std::collections::hash_map::DefaultHasher::new();
+            let mut hash2 = std::collections::hash_map::DefaultHasher::new();
+            data.hash(&mut hash1);
+            (*d).hash(&mut hash2);
+            if hash1.finish() == hash2.finish() {
+                return;
+            }
             *d = Some(data);
         }
         self.queue
@@ -258,7 +267,7 @@ impl SyncStorage {
     }
 
     pub async fn add_container<
-        T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static,
+        T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static,
     >(
         &self,
         name: &str,
