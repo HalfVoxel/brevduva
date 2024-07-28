@@ -21,6 +21,7 @@ pub struct SyncStorage {
 }
 
 struct SyncStorageInner {
+    client_id: String,
     containers: Vec<Arc<dyn Container>>,
     queue_sender: tokio::sync::mpsc::Sender<QueueMessage>,
 }
@@ -41,7 +42,7 @@ enum QueueMessage {
 
 #[derive(Serialize, Deserialize)]
 enum MetaMessage {
-    ReceivedAllMessages { topic: String },
+    ReceivedAllMessages { client: String, topic: String },
 }
 
 pub struct SyncedContainer<T> {
@@ -168,6 +169,7 @@ impl SyncStorage {
             inner: Arc::new(Mutex::new(SyncStorageInner {
                 containers: Vec::new(),
                 queue_sender,
+                client_id: client_id.to_string(),
             })),
         };
 
@@ -213,6 +215,7 @@ impl SyncStorage {
             inner: Arc::new(Mutex::new(SyncStorageInner {
                 containers: Vec::new(),
                 queue_sender,
+                client_id: client_id.to_string(),
             })),
         };
 
@@ -290,6 +293,9 @@ impl SyncStorage {
         mut queue: tokio::sync::mpsc::Receiver<QueueMessage>,
         storage: SyncStorage,
     ) -> Result<(), C::Error> {
+        let client_id = storage.inner.lock().unwrap().client_id.clone();
+        let client_id = &client_id;
+
         // Downgrade to a weak reference, so that we don't keep the storage alive indefinitely just by running this task
         let weak_storage = Arc::downgrade(&storage.inner);
         drop(storage);
@@ -325,7 +331,11 @@ impl SyncStorage {
                         if topic == META_TOPIC {
                             let meta: MetaMessage = serde_json::from_slice(data).unwrap();
                             match meta {
-                                MetaMessage::ReceivedAllMessages { topic } => {
+                                MetaMessage::ReceivedAllMessages { client, topic } => {
+                                    if *client_id != client {
+                                        // Ignore messages from other clients
+                                        continue;
+                                    }
                                     let container = {
                                         if let Some(inner) = storage2.upgrade() {
                                             let inner = inner.lock().unwrap();
@@ -440,6 +450,7 @@ impl SyncStorage {
                                     QoS::AtMostOnce,
                                     false,
                                     &serde_json::to_vec(&MetaMessage::ReceivedAllMessages {
+                                        client: client_id.clone(),
                                         topic: topic.clone(),
                                     })
                                     .unwrap(),
@@ -488,6 +499,7 @@ impl SyncStorage {
                                         QoS::AtMostOnce,
                                         false,
                                         &serde_json::to_vec(&MetaMessage::ReceivedAllMessages {
+                                            client: client_id.clone(),
                                             topic,
                                         })
                                         .unwrap(),
