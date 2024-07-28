@@ -53,7 +53,7 @@ pub struct SyncedContainer<T> {
     has_received_message: Mutex<bool>,
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum BrevduvaError {
     #[error("A container with the name \"{0}\" already exists")]
     ContainerAlreadyExists(String),
