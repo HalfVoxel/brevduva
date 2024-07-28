@@ -446,7 +446,7 @@ impl SyncStorage {
                         client
                             .lock()
                             .await
-                            .publish(&topic, QoS::AtLeastOnce, true, data.as_bytes())
+                            .publish(&topic, QoS::AtMostOnce, true, data.as_bytes())
                             .await?;
                     }
                     QueueMessage::Subscribe { container_id } => {
