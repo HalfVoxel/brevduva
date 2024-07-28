@@ -1,6 +1,8 @@
 // #![deny(clippy::future_not_send)]
 mod blocker;
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use embedded_svc::mqtt::client::asynch;
@@ -9,6 +11,7 @@ use embedded_svc::mqtt::client::EventPayload;
 use embedded_svc::mqtt::client::QoS;
 #[cfg(feature = "embedded")]
 use esp_idf_svc::mqtt::client::{EspAsyncMqttClient, MqttClientConfiguration};
+use log::trace;
 use log::{error, info, warn};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::pin::pin;
@@ -97,7 +100,6 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> SyncedContainer<T>
                 f(d);
             }
         }
-        info!("Sending sync message for container {}", self.topic);
         self.queue
             .send(QueueMessage::SyncContainer {
                 container_id: self.id,
@@ -135,7 +137,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
         let d = serde_json::from_slice(payload).map_err(BrevduvaError::MessageDeserialize)?;
         let mut data = self.data.lock().unwrap();
         *data = Some(d);
-        println!("Received message: {:?}", data);
+        trace!("Deserialized message: {data:?}");
         *self.has_received_message.lock().unwrap() = true;
         Ok(())
     }
@@ -200,7 +202,7 @@ impl SyncStorage {
         let (host, port) = host
             .rsplit_once(":")
             .expect("Host should be on the format 'mqtt://host:port'");
-        println!("Connecting to {} : {}", host, port);
+        trace!("Connecting to {}:{}", host, port);
         let port: u16 = port.parse().unwrap();
         let mut mqtt_options = edge_mqtt::io::MqttOptions::new(client_id, host, port);
 
@@ -243,7 +245,7 @@ impl SyncStorage {
 
         for (id, container) in containers.iter().enumerate() {
             if !container.has_received_message() {
-                info!(
+                trace!(
                     "Container {} did not have server state. Pushing our state to the server",
                     container.topic()
                 );
@@ -316,6 +318,8 @@ impl SyncStorage {
         // Note also that if you go to http://tools.emqx.io/ and then connect and send a message to topic
         // "esp-mqtt-demo", the client configured here should receive it.
         let storage2 = storage.clone();
+        let first_connect = AtomicBool::new(true);
+        let first_connect = &first_connect;
         let listen = pin!(async move {
             while let Ok(event) = connection.next().await {
                 let t = t0.elapsed();
@@ -323,7 +327,8 @@ impl SyncStorage {
 
                 match payload {
                     EventPayload::Connected(_) => {
-                        info!("Connected to MQTT broker");
+                        trace!("Connected to MQTT broker");
+                        first_connect.store(true, Ordering::Relaxed);
                         reconnect_sender.send(()).await.unwrap();
                     }
                     EventPayload::Received {
@@ -359,7 +364,7 @@ impl SyncStorage {
                                     };
                                     match container {
                                         Some(container) => {
-                                            info!("Container \"{}\" has received all pending messages", topic);
+                                            trace!("Container \"{}\" has received all pending messages", topic);
                                             container.up_to_date().unblock().await;
                                         }
                                         None => {
@@ -404,24 +409,22 @@ impl SyncStorage {
                         // info!("Subscribed to some topic");
                     }
                     _ => {
-                        warn!("[Queue] Event: {} at {}", payload, t.as_millis());
+                        trace!("[Queue] Event: {} at {}", payload, t.as_millis());
                     }
                 }
             }
 
-            warn!("Connection closed");
+            trace!("Connection closed");
 
             Result::<(), C::Error>::Ok(())
         });
 
         let storage3 = storage.clone();
         let publish = pin!(async move {
-            info!("Running publish loop");
             while let Some(event) = queue.recv().await {
-                info!("Got publish event {:?}", event);
                 match event {
                     QueueMessage::SyncContainer { container_id } => {
-                        info!("Publishing container {}", container_id);
+                        trace!("Publishing container {}", container_id);
                         let (topic, data) = {
                             if let Some(inner) = storage3.upgrade() {
                                 let inner = inner.lock().unwrap();
@@ -438,6 +441,11 @@ impl SyncStorage {
                             .await?;
                     }
                     QueueMessage::Subscribe { container_id } => {
+                        if !first_connect.load(Ordering::Relaxed) {
+                            trace!("Not connected, skipping subscribe");
+                            continue;
+                        }
+
                         let topic = {
                             if let Some(inner) = storage3.upgrade() {
                                 let inner = inner.lock().unwrap();
@@ -478,7 +486,7 @@ impl SyncStorage {
                     // We cannot do this in the event loop itself, since we can deadlock due to the event
                     // channel not being pumped.
                     while reconnect_receiver.recv().await.is_some() {
-                        info!("Connected, subscribing to all topics");
+                        trace!("Connected, subscribing to all topics");
                         let mut topics = {
                             if let Some(inner) = storage.upgrade() {
                                 let inner = inner.lock().unwrap();
