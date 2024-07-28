@@ -53,6 +53,12 @@ pub struct SyncedContainer<T> {
     has_received_message: Mutex<bool>,
 }
 
+#[derive(Error, Debug)]
+pub enum BrevduvaError {
+    #[error("A container with the name \"{0}\" already exists")]
+    ContainerAlreadyExists(String),
+}
+
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> SyncedContainer<T> {
     fn new(id: usize, data: T, queue: tokio::sync::mpsc::Sender<QueueMessage>) -> Self {
         Self {
@@ -242,10 +248,15 @@ impl SyncStorage {
         T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static,
     >(
         &self,
+        name: String,
         inital: T,
-    ) -> Arc<SyncedContainer<T>> {
+    ) -> Result<Arc<SyncedContainer<T>>, BrevduvaError> {
         let container = {
             let mut inner = self.inner.lock().unwrap();
+            if inner.containers.iter().any(|c| c.topic() == name) {
+                return Err(BrevduvaError::ContainerAlreadyExists(name));
+            }
+
             let container = Arc::new(SyncedContainer::new(
                 inner.containers.len(),
                 inital,
@@ -263,7 +274,7 @@ impl SyncStorage {
             .await
             .unwrap();
 
-        container
+        Ok(container)
     }
 
     async fn start<C: asynch::Client + asynch::Publish + Send, Conn: asynch::Connection + Send>(
