@@ -388,7 +388,7 @@ impl SyncStorage {
                             match container {
                                 Some(container) => {
                                     if let Err(e) = container.on_message(data) {
-                                        error!("{e}. Ignoring message");
+                                        error!("{e}. Ignoring message on topic \"{topic}\"");
                                     }
                                 }
                                 None => {
