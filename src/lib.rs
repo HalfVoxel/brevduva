@@ -115,8 +115,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
             let mut d = self.data.lock().unwrap();
             let mut hash1 = std::collections::hash_map::DefaultHasher::new();
             let mut hash2 = std::collections::hash_map::DefaultHasher::new();
-            data.hash(&mut hash1);
-            (*d).hash(&mut hash2);
+            let k1 = Some(&data);
+            let k2 = d.as_ref();
+            k1.hash(&mut hash1);
+            k2.hash(&mut hash2);
             if hash1.finish() == hash2.finish() {
                 return;
             }
