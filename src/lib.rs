@@ -47,7 +47,11 @@ enum QueueMessage {
 
 #[derive(Serialize, Deserialize)]
 enum MetaMessage {
-    ReceivedAllMessages { client: String, topic: String },
+    ReceivedAllMessages {
+        client: String,
+        connection_id: u32,
+        topic: String,
+    },
 }
 
 pub struct SyncedContainer<T> {
@@ -318,7 +322,7 @@ impl SyncStorage {
         let storage = weak_storage;
 
         let t0 = std::time::Instant::now();
-        let (reconnect_sender, mut reconnect_receiver) = tokio::sync::mpsc::channel::<()>(2);
+        let (reconnect_sender, mut reconnect_receiver) = tokio::sync::mpsc::channel::<u32>(2);
 
         let client = Arc::new(tokio::sync::Mutex::new(client));
         let client2 = client.clone();
@@ -329,9 +333,14 @@ impl SyncStorage {
         // Note also that if you go to http://tools.emqx.io/ and then connect and send a message to topic
         // "esp-mqtt-demo", the client configured here should receive it.
         let storage2 = storage.clone();
-        let first_connect = AtomicBool::new(true);
+        let first_connect = AtomicBool::new(false);
         let first_connect = &first_connect;
+        let connection_id = Arc::new(Mutex::new(0u32));
+        let connection_id2 = connection_id.clone();
+        let meta_topic = format!("{META_TOPIC}/{client_id}");
+        let meta_topic = &meta_topic;
         let listen = pin!(async move {
+            let mut current_connection_id = 0u32;
             while let Ok(event) = connection.next().await {
                 let t = t0.elapsed();
                 let payload = event.payload();
@@ -340,14 +349,16 @@ impl SyncStorage {
                     EventPayload::Connected(_) => {
                         trace!("Connected to MQTT broker");
                         first_connect.store(true, Ordering::Relaxed);
-                        reconnect_sender.send(()).await.unwrap();
+                        current_connection_id += 1;
+                        *connection_id2.lock().unwrap() = current_connection_id;
+                        reconnect_sender.send(current_connection_id).await.unwrap();
                     }
                     EventPayload::Received {
                         topic: Some(topic),
                         data,
                         ..
                     } => {
-                        if topic == META_TOPIC {
+                        if topic == meta_topic {
                             let meta: MetaMessage = match serde_json::from_slice(data) {
                                 Ok(m) => m,
                                 Err(e) => {
@@ -356,8 +367,14 @@ impl SyncStorage {
                                 }
                             };
                             match meta {
-                                MetaMessage::ReceivedAllMessages { client, topic } => {
-                                    if *client_id != client {
+                                MetaMessage::ReceivedAllMessages {
+                                    client,
+                                    connection_id: message_connection_id,
+                                    topic,
+                                } => {
+                                    if *client_id != client
+                                        || message_connection_id != current_connection_id
+                                    {
                                         // Ignore messages from other clients
                                         continue;
                                     }
@@ -470,13 +487,15 @@ impl SyncStorage {
                         if let Err(e) = client.subscribe(&topic, QoS::AtLeastOnce).await {
                             error!("Failed to subscribe to topic \"{topic}\". Trying again when connecting: {e:?}");
                         } else {
+                            let connection_id = *connection_id.lock().unwrap();
                             client
                                 .publish(
-                                    META_TOPIC,
-                                    QoS::AtMostOnce,
+                                    meta_topic,
+                                    QoS::AtLeastOnce,
                                     false,
                                     &serde_json::to_vec(&MetaMessage::ReceivedAllMessages {
                                         client: client_id.clone(),
+                                        connection_id,
                                         topic: topic.clone(),
                                     })
                                     .unwrap(),
@@ -496,7 +515,7 @@ impl SyncStorage {
                     // Listens to a connected message, and ensures we subscribe every time we reconnect.
                     // We cannot do this in the event loop itself, since we can deadlock due to the event
                     // channel not being pumped.
-                    while reconnect_receiver.recv().await.is_some() {
+                    while let Some(connection_id) = reconnect_receiver.recv().await {
                         trace!("Connected, subscribing to all topics");
                         let mut topics = {
                             if let Some(inner) = storage.upgrade() {
@@ -506,7 +525,7 @@ impl SyncStorage {
                                 break;
                             }
                         };
-                        topics.push(META_TOPIC.to_owned());
+                        topics.push(meta_topic.to_owned());
 
                         for topic in topics {
                             while let Err(e) = client2.lock().await.subscribe(&topic, QoS::AtLeastOnce).await {
@@ -516,16 +535,17 @@ impl SyncStorage {
                                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                             }
 
-                            if topic != META_TOPIC {
+                            if topic != *meta_topic {
                                 client2
                                     .lock()
                                     .await
                                     .publish(
-                                        META_TOPIC,
-                                        QoS::AtMostOnce,
+                                        meta_topic,
+                                        QoS::AtLeastOnce,
                                         false,
                                         &serde_json::to_vec(&MetaMessage::ReceivedAllMessages {
                                             client: client_id.clone(),
+                                            connection_id,
                                             topic,
                                         })
                                         .unwrap(),
