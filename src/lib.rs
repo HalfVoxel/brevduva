@@ -192,12 +192,21 @@ impl SyncStorage {
         username: &'a str,
         password: &'a str,
     ) -> Self {
+        use esp_idf_svc::mqtt::client::LwtConfiguration;
+
+        let online_status_topic = format!("devices/{client_id}/status");
         let mqtt_config = MqttClientConfiguration::<'a> {
             client_id: Some(client_id),
             username: Some(username),
             password: Some(password),
             // Make the broker remember the state for the client between connections
             disable_clean_session: true,
+            lwt: Some(LwtConfiguration {
+                topic: Box::leak(Box::new(format!("sync/{online_status_topic}"))),
+                payload: "offline".as_bytes(),
+                qos: QoS::AtLeastOnce,
+                retain: true,
+            }),
             ..Default::default()
         };
 
@@ -209,6 +218,11 @@ impl SyncStorage {
                 client_id: client_id.to_string(),
             })),
         };
+
+        storage
+            .add_container(&online_status_topic, "online".to_string())
+            .await
+            .unwrap();
 
         let storage2 = storage.clone();
         let (client, connection) = EspAsyncMqttClient::new(host, &mqtt_config).unwrap();
@@ -228,6 +242,8 @@ impl SyncStorage {
         username: &'a str,
         password: &'a str,
     ) -> Self {
+        use edge_mqtt::io::LastWill;
+
         let host = host
             .strip_prefix("mqtt://")
             .expect("Host should start with 'mqtt://'");
@@ -242,6 +258,14 @@ impl SyncStorage {
         mqtt_options.set_clean_session(false);
         mqtt_options.set_credentials(username, password);
 
+        let online_status_topic = format!("devices/{client_id}/status");
+        mqtt_options.set_last_will(LastWill {
+            topic: format!("sync/{online_status_topic}"),
+            message: "offline".to_string().into(),
+            qos: edge_mqtt::io::QoS::AtLeastOnce,
+            retain: true,
+        });
+
         let (rumqttc_client, rumqttc_eventloop) = edge_mqtt::io::AsyncClient::new(mqtt_options, 10);
 
         let client = edge_mqtt::io::MqttClient::new(rumqttc_client);
@@ -255,6 +279,11 @@ impl SyncStorage {
                 client_id: client_id.to_string(),
             })),
         };
+
+        storage
+            .add_container(&online_status_topic, "online".to_string())
+            .await
+            .unwrap();
 
         let storage2 = storage.clone();
         tokio::spawn(async move {
