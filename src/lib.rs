@@ -1,6 +1,7 @@
 // #![deny(clippy::future_not_send)]
 mod blocker;
 
+use core::panic;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::atomic::AtomicBool;
@@ -37,6 +38,7 @@ trait Container: Send + Sync + 'static {
     fn serialize(&self) -> String;
     fn has_received_message(&self) -> bool;
     fn up_to_date(&self) -> &blocker::Blocker;
+    fn read_only(&self) -> bool;
 }
 
 #[derive(Debug)]
@@ -61,6 +63,7 @@ pub struct SyncedContainer<T> {
     queue: tokio::sync::mpsc::Sender<QueueMessage>,
     up_to_date: blocker::Blocker,
     has_received_message: Mutex<bool>,
+    read_only: bool,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -77,6 +80,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
         topic: String,
         data: T,
         queue: tokio::sync::mpsc::Sender<QueueMessage>,
+        read_only: bool,
     ) -> Self {
         Self {
             id,
@@ -85,6 +89,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
             queue,
             up_to_date: blocker::Blocker::new(),
             has_received_message: Mutex::new(false),
+            read_only,
         }
     }
 
@@ -100,6 +105,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
     where
         F: FnOnce(&mut T) + Send,
     {
+        if self.read_only {
+            panic!("Cannot set data on a read-only container");
+        }
+
         {
             let mut d = self.data.lock().unwrap();
             if let Some(d) = d.as_mut() {
@@ -115,6 +124,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
     }
 
     pub async fn set(&self, data: T) {
+        if self.read_only {
+            panic!("Cannot set data on a read-only container");
+        }
+
         {
             let mut d = self.data.lock().unwrap();
             let mut hash1 = std::collections::hash_map::DefaultHasher::new();
@@ -142,6 +155,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
 {
     fn topic(&self) -> &str {
         &self.topic
+    }
+
+    fn read_only(&self) -> bool {
+        self.read_only
     }
 
     fn up_to_date(&self) -> &blocker::Blocker {
@@ -259,7 +276,7 @@ impl SyncStorage {
         }
 
         for (id, container) in containers.iter().enumerate() {
-            if !container.has_received_message() {
+            if !container.has_received_message() && !container.read_only() {
                 trace!(
                     "Container {} did not have server state. Pushing our state to the server",
                     container.topic()
@@ -286,11 +303,14 @@ impl SyncStorage {
                 return Err(BrevduvaError::ContainerAlreadyExists(name.to_string()));
             }
 
+            let read_only = topic.contains('+') || topic.contains('#') || topic.contains('$');
+
             let container = Arc::new(SyncedContainer::new(
                 inner.containers.len(),
                 topic,
                 inital,
                 inner.queue_sender.clone(),
+                read_only,
             ));
             inner.containers.push(container.clone());
             container
