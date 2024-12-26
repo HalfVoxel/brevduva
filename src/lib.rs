@@ -96,7 +96,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
         }
     }
 
-    pub fn on_change<F>(&self, f: impl Fn(&T) + Send + Sync + 'static) {
+    pub fn on_change(&self, f: impl Fn(&T) + Send + Sync + 'static) {
         let mut callback = self.callback.lock().unwrap();
         *callback = Some(Box::new(f));
     }
