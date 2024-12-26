@@ -60,6 +60,7 @@ pub struct SyncedContainer<T> {
     id: usize,
     topic: String,
     data: Mutex<Option<T>>,
+    callback: Mutex<Option<Box<dyn Fn(&T) + Send + Sync>>>,
     queue: tokio::sync::mpsc::Sender<QueueMessage>,
     up_to_date: blocker::Blocker,
     has_received_message: Mutex<bool>,
@@ -81,6 +82,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
         data: T,
         queue: tokio::sync::mpsc::Sender<QueueMessage>,
         read_only: bool,
+        callback: Option<Box<dyn Fn(&T) + Send + Sync>>,
     ) -> Self {
         Self {
             id,
@@ -90,7 +92,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
             up_to_date: blocker::Blocker::new(),
             has_received_message: Mutex::new(false),
             read_only,
+            callback: Mutex::new(callback),
         }
+    }
+
+    pub fn on_change<F>(&self, f: impl Fn(&T) + Send + Sync + 'static) {
+        let mut callback = self.callback.lock().unwrap();
+        *callback = Some(Box::new(f));
     }
 
     pub async fn wait_for_sync(&self) {
@@ -113,6 +121,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
             let mut d = self.data.lock().unwrap();
             if let Some(d) = d.as_mut() {
                 f(d);
+
+                if let Some(callback) = self.callback.lock().unwrap().as_ref() {
+                    callback(d);
+                }
             }
         }
         self.queue
@@ -140,6 +152,9 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
                 return;
             }
             *d = Some(data);
+            if let Some(callback) = self.callback.lock().unwrap().as_ref() {
+                callback(d.as_ref().unwrap())
+            }
         }
         self.queue
             .send(QueueMessage::SyncContainer {
@@ -171,6 +186,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
         *data = Some(d);
         trace!("Deserialized message: {data:?}");
         *self.has_received_message.lock().unwrap() = true;
+
+        if let Some(callback) = self.callback.lock().unwrap().as_ref() {
+            callback(data.as_ref().unwrap());
+        }
         Ok(())
     }
 
@@ -340,6 +359,7 @@ impl SyncStorage {
                 inital,
                 inner.queue_sender.clone(),
                 read_only,
+                None,
             ));
             inner.containers.push(container.clone());
             container
