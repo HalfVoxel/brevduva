@@ -312,7 +312,7 @@ impl SyncStorage {
             disable_clean_session: persistance == SessionPersistance::Persistent,
             lwt: Some(LwtConfiguration {
                 topic: Box::leak(Box::new(format!("sync/{online_status_topic}"))),
-                payload: "offline".as_bytes(),
+                payload: "\"offline\"".as_bytes(),
                 qos: QoS::AtLeastOnce,
                 retain: true,
             }),
@@ -372,7 +372,7 @@ impl SyncStorage {
         let online_status_topic = format!("devices/{client_id}/status");
         mqtt_options.set_last_will(LastWill {
             topic: format!("sync/{online_status_topic}"),
-            message: "offline".to_string().into(),
+            message: "\"offline\"".to_string().into(),
             qos: edge_mqtt::io::QoS::AtLeastOnce,
             retain: true,
         });
