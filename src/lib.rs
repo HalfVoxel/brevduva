@@ -739,7 +739,7 @@ impl SyncStorage {
                                 break;
                             }
                         };
-                        topics.push(meta_topic.to_owned());
+                        topics.insert(0, meta_topic.to_owned());
 
                         for topic in topics {
                             while let Err(e) = client2.lock().await.subscribe(&topic, QoS::AtLeastOnce).await {
