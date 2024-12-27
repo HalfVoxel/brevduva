@@ -273,10 +273,11 @@ impl SyncStorage {
             })),
         };
 
-        storage
-            .add_container(&online_status_topic, "online".to_string())
+        let status = storage
+            .add_container(&online_status_topic, "offline".to_string())
             .await
             .unwrap();
+        status.set("online".to_string()).await;
 
         let storage2 = storage.clone();
         let (client, connection) = EspAsyncMqttClient::new(host, &mqtt_config).unwrap();
@@ -334,10 +335,11 @@ impl SyncStorage {
             })),
         };
 
-        storage
-            .add_container(&online_status_topic, "online".to_string())
+        let status = storage
+            .add_container(&online_status_topic, "offline".to_string())
             .await
             .unwrap();
+        status.set("online".to_string()).await;
 
         let storage2 = storage.clone();
         tokio::spawn(async move {
