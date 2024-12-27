@@ -362,9 +362,16 @@ impl SyncStorage {
     pub async fn add_channel<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
         &self,
         name: &str,
-    ) -> Result<Arc<crate::channel::Channel<T>>, BrevduvaError> {
+    ) -> Result<
+        (
+            Arc<crate::channel::Channel<T>>,
+            tokio::sync::mpsc::Receiver<T>,
+        ),
+        BrevduvaError,
+    > {
         let topic = format!("sync/{}", name);
 
+        let (sender, receiver) = tokio::sync::mpsc::channel::<T>(1);
         let container = {
             let mut inner = self.inner.lock().unwrap();
             if inner.containers.iter().any(|c| c.topic() == topic) {
@@ -378,7 +385,7 @@ impl SyncStorage {
                 topic,
                 inner.queue_sender.clone(),
                 read_only,
-                None,
+                sender,
             ));
             inner.containers.push(container.clone());
             container
@@ -386,7 +393,7 @@ impl SyncStorage {
 
         container.subscribe().await;
 
-        Ok(container)
+        Ok((container, receiver))
     }
 
     pub async fn add_container<

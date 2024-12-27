@@ -9,10 +9,10 @@ pub struct Channel<T> {
     id: usize,
     topic: String,
     queue: tokio::sync::mpsc::Sender<QueueMessage>,
+    channel: tokio::sync::mpsc::Sender<T>,
     up_to_date: blocker::Blocker,
     read_only: bool,
     has_received_message: Mutex<bool>,
-    callback: Mutex<Option<Box<dyn Fn(&T) + Send + Sync>>>,
 }
 
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Channel<T> {
@@ -23,9 +23,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
     fn on_message(&self, payload: &[u8]) -> Result<(), crate::BrevduvaError> {
         let message: T = postcard::from_bytes(payload)?;
         *self.has_received_message.lock().unwrap() = true;
-        if let Some(callback) = self.callback.lock().unwrap().as_ref() {
-            callback(&message);
-        }
+        let channel = self.channel.clone();
+
+        // Ideally on_message should be async, but that messes with traits.
+        // Could maybe use async_trait
+        tokio::spawn(async move {
+            channel.send(message).await.unwrap();
+        });
         Ok(())
     }
 
@@ -65,7 +69,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
         topic: String,
         queue: tokio::sync::mpsc::Sender<QueueMessage>,
         read_only: bool,
-        callback: Option<Box<dyn Fn(&T) + Send + Sync>>,
+        sender: tokio::sync::mpsc::Sender<T>,
     ) -> Self {
         Self {
             id,
@@ -74,13 +78,8 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
             up_to_date: blocker::Blocker::new(),
             has_received_message: Mutex::new(false),
             read_only,
-            callback: Mutex::new(callback),
+            channel: sender,
         }
-    }
-
-    pub fn on_recv(&self, f: impl Fn(&T) + Send + Sync + 'static) {
-        let mut callback = self.callback.lock().unwrap();
-        *callback = Some(Box::new(f));
     }
 
     pub async fn wait_for_sync(&self) {
