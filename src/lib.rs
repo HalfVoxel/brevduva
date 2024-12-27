@@ -1,5 +1,6 @@
 // #![deny(clippy::future_not_send)]
 mod blocker;
+pub mod channel;
 
 use core::panic;
 use std::hash::Hash;
@@ -8,6 +9,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use channel::Channel;
 use embedded_svc::mqtt::client::asynch;
 use embedded_svc::mqtt::client::Event;
 use embedded_svc::mqtt::client::EventPayload;
@@ -73,6 +75,8 @@ pub enum BrevduvaError {
     ContainerAlreadyExists(String),
     #[error("Failed to deserialize message")]
     MessageDeserialize(#[from] serde_json::Error),
+    #[error("Failed to deserialize postcard message")]
+    MessageDeserializePostcard(#[from] postcard::Error),
 }
 
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> SyncedContainer<T> {
@@ -94,6 +98,15 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
             read_only,
             callback: Mutex::new(callback),
         }
+    }
+
+    pub(crate) async fn subscribe(&self) {
+        self.queue
+            .send(QueueMessage::Subscribe {
+                container_id: self.id,
+            })
+            .await
+            .unwrap();
     }
 
     pub fn on_change(&self, f: impl Fn(&T) + Send + Sync + 'static) {
@@ -337,6 +350,38 @@ impl SyncStorage {
         }
     }
 
+    pub async fn add_channel<
+        T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static,
+    >(
+        &self,
+        name: &str,
+    ) -> Result<Arc<crate::channel::Channel<T>>, BrevduvaError> {
+        let topic = format!("sync/{}", name);
+
+        let container = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.containers.iter().any(|c| c.topic() == topic) {
+                return Err(BrevduvaError::ContainerAlreadyExists(name.to_string()));
+            }
+
+            let read_only = topic.contains('+') || topic.contains('#') || topic.contains('$');
+
+            let container = Arc::new(Channel::new(
+                inner.containers.len(),
+                topic,
+                inner.queue_sender.clone(),
+                read_only,
+                None,
+            ));
+            inner.containers.push(container.clone());
+            container
+        };
+
+        container.subscribe().await;
+
+        Ok(container)
+    }
+
     pub async fn add_container<
         T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static,
     >(
@@ -365,13 +410,7 @@ impl SyncStorage {
             container
         };
 
-        container
-            .queue
-            .send(QueueMessage::Subscribe {
-                container_id: container.id,
-            })
-            .await
-            .unwrap();
+        container.subscribe().await;
 
         Ok(container)
     }
