@@ -234,7 +234,18 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
 
     fn serialize(&self) -> String {
         let data = self.data.lock().unwrap();
-        serde_json::to_string(&*data).unwrap()
+        let s = serde_json::to_string(&*data).unwrap();
+
+        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() {
+            // Convert a json string to a raw string
+            s.strip_prefix('"')
+                .unwrap()
+                .strip_suffix('"')
+                .unwrap()
+                .to_string()
+        } else {
+            s
+        }
     }
 }
 
