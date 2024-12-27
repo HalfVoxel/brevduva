@@ -286,6 +286,12 @@ fn test_matches_topic() {
     assert!(matches_topic("", ""));
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SessionPersistance {
+    Persistent,
+    Transient,
+}
+
 impl SyncStorage {
     #[cfg(feature = "embedded")]
     pub async fn new<'a>(
@@ -293,6 +299,7 @@ impl SyncStorage {
         host: &'static str,
         username: &'a str,
         password: &'a str,
+        persistance: SessionPersistance,
     ) -> Self {
         use esp_idf_svc::mqtt::client::LwtConfiguration;
 
@@ -302,7 +309,7 @@ impl SyncStorage {
             username: Some(username),
             password: Some(password),
             // Make the broker remember the state for the client between connections
-            disable_clean_session: true,
+            disable_clean_session: persistance == SessionPersistance::Persistent,
             lwt: Some(LwtConfiguration {
                 topic: Box::leak(Box::new(format!("sync/{online_status_topic}"))),
                 payload: "offline".as_bytes(),
@@ -344,6 +351,7 @@ impl SyncStorage {
         host: &'static str,
         username: &'a str,
         password: &'a str,
+        persistance: SessionPersistance,
     ) -> Self {
         use edge_mqtt::io::LastWill;
 
@@ -358,7 +366,7 @@ impl SyncStorage {
         let mut mqtt_options = edge_mqtt::io::MqttOptions::new(client_id, host, port);
 
         mqtt_options.set_keep_alive(core::time::Duration::from_secs(10));
-        mqtt_options.set_clean_session(false);
+        mqtt_options.set_clean_session(persistance == SessionPersistance::Transient);
         mqtt_options.set_credentials(username, password);
 
         let online_status_topic = format!("devices/{client_id}/status");
