@@ -16,15 +16,21 @@ pub(crate) enum SerializationFormat {
     String,
 }
 
-pub struct Channel<T> {
+pub struct Channel<T: 'static> {
     id: usize,
     topic: String,
     queue: tokio::sync::mpsc::Sender<QueueMessage>,
-    channel: tokio::sync::mpsc::Sender<T>,
+    channel: tokio::sync::mpsc::Sender<ChannelMessage<T>>,
     up_to_date: blocker::Blocker,
     read_only: bool,
     has_received_message: Mutex<bool>,
     format: SerializationFormat,
+}
+
+#[derive(Clone)]
+pub struct ChannelMessage<T: 'static> {
+    pub topic: String,
+    pub message: T,
 }
 
 #[async_trait::async_trait]
@@ -33,11 +39,17 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
         &self.topic
     }
 
-    async fn on_message(&self, payload: &'_ [u8]) -> Result<(), crate::BrevduvaError> {
+    async fn on_message(&self, topic: &str, payload: &[u8]) -> Result<(), crate::BrevduvaError> {
         let message: T = deserialize_from_slice(payload, self.format)?;
         *self.has_received_message.lock().unwrap() = true;
 
-        self.channel.send(message).await.unwrap();
+        self.channel
+            .send(ChannelMessage {
+                topic: topic.to_string(),
+                message,
+            })
+            .await
+            .unwrap();
         Ok(())
     }
 
@@ -109,7 +121,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
         topic: String,
         queue: tokio::sync::mpsc::Sender<QueueMessage>,
         read_only: bool,
-        sender: tokio::sync::mpsc::Sender<T>,
+        sender: tokio::sync::mpsc::Sender<ChannelMessage<T>>,
     ) -> Self {
         Self {
             id,

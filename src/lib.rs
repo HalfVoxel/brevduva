@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use channel::Channel;
+use channel::ChannelMessage;
 use embedded_svc::mqtt::client::asynch;
 use embedded_svc::mqtt::client::Event;
 use embedded_svc::mqtt::client::EventPayload;
@@ -39,7 +40,7 @@ struct SyncStorageInner {
 #[async_trait::async_trait]
 trait Container: Send + Sync + 'static {
     fn topic(&self) -> &str;
-    async fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError>;
+    async fn on_message(&self, topic: &str, payload: &[u8]) -> Result<(), BrevduvaError>;
     fn serialize(&self) -> Vec<u8>;
     fn has_received_message(&self) -> bool;
     fn up_to_date(&self) -> &blocker::Blocker;
@@ -95,6 +96,8 @@ pub enum BrevduvaError {
     StringDeserialize2(#[from] raw_deserializer::RawError),
     #[error("Failed to deserialize postcard message")]
     MessageDeserializePostcard(#[from] postcard::Error),
+    #[error("Container topic '{0}' cannot contain characters like +, # or $")]
+    ContainerTopicCannotHaveWildcard(String),
 }
 
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> SyncedContainer<T> {
@@ -212,7 +215,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
         &self.up_to_date
     }
 
-    async fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError> {
+    async fn on_message(&self, _topic: &str, payload: &[u8]) -> Result<(), BrevduvaError> {
         // For raw strings, we treat the payload as a string directly, instead of json
         let d = channel::deserialize_from_slice(
             payload,
@@ -436,13 +439,13 @@ impl SyncStorage {
     ) -> Result<
         (
             Arc<crate::channel::Channel<T>>,
-            tokio::sync::mpsc::Receiver<T>,
+            tokio::sync::mpsc::Receiver<ChannelMessage<T>>,
         ),
         BrevduvaError,
     > {
         let topic = format!("sync/{}", name);
 
-        let (sender, receiver) = tokio::sync::mpsc::channel::<T>(1);
+        let (sender, receiver) = tokio::sync::mpsc::channel::<ChannelMessage<T>>(1);
         let container = {
             let mut inner = self.inner.lock().unwrap();
             if inner.containers.iter().any(|c| c.topic() == topic) {
@@ -481,14 +484,17 @@ impl SyncStorage {
                 return Err(BrevduvaError::ContainerAlreadyExists(name.to_string()));
             }
 
-            let read_only = topic.contains('+') || topic.contains('#') || topic.contains('$');
+            let has_wildcard = topic.contains('+') || topic.contains('#') || topic.contains('$');
+            if has_wildcard {
+                return Err(BrevduvaError::ContainerTopicCannotHaveWildcard(topic));
+            }
 
             let container = Arc::new(SyncedContainer::new(
                 inner.containers.len(),
                 topic,
                 inital,
                 inner.queue_sender.clone(),
-                read_only,
+                false,
                 None,
             ));
             inner.containers.push(container.clone());
@@ -616,7 +622,7 @@ impl SyncStorage {
                                 warn!("Received message on unknown topic: \"{}\"", topic);
                             } else {
                                 for container in containers {
-                                    if let Err(e) = container.on_message(data).await {
+                                    if let Err(e) = container.on_message(topic, data).await {
                                         error!("{e}. Ignoring message on topic \"{topic}\"");
                                     }
                                 }
