@@ -359,9 +359,7 @@ impl SyncStorage {
         }
     }
 
-    pub async fn add_channel<
-        T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static,
-    >(
+    pub async fn add_channel<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
         &self,
         name: &str,
     ) -> Result<Arc<crate::channel::Channel<T>>, BrevduvaError> {
