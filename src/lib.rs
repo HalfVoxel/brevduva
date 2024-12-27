@@ -3,6 +3,7 @@ mod blocker;
 pub mod channel;
 
 use core::panic;
+use std::any::Any;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::atomic::AtomicBool;
@@ -85,6 +86,8 @@ pub enum BrevduvaError {
     ContainerAlreadyExists(String),
     #[error("Failed to deserialize message")]
     MessageDeserialize(#[from] serde_json::Error),
+    #[error("Failed to deserialize message")]
+    StringDeserialize(#[from] std::string::FromUtf8Error),
     #[error("Failed to deserialize postcard message")]
     MessageDeserializePostcard(#[from] postcard::Error),
 }
@@ -205,7 +208,15 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
     }
 
     async fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError> {
-        let d = serde_json::from_slice(payload).map_err(BrevduvaError::MessageDeserialize)?;
+        // For raw strings, we treat the payload as a string directly, instead of json
+        let d = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() {
+            let s = Box::new(
+                String::from_utf8(payload.to_vec()).map_err(BrevduvaError::StringDeserialize)?,
+            );
+            *(s as Box<dyn Any>).downcast::<T>().unwrap()
+        } else {
+            serde_json::from_slice(payload).map_err(BrevduvaError::MessageDeserialize)?
+        };
         let mut data = self.data.lock().unwrap();
         *data = Some(d);
         trace!("Deserialized message: {data:?}");
