@@ -45,8 +45,17 @@ trait Container: Send + Sync + 'static {
 
 #[derive(Debug)]
 enum QueueMessage {
-    SyncContainer { container_id: usize },
-    Subscribe { container_id: usize },
+    SyncContainer {
+        container_id: usize,
+    },
+    PublishOnChannel {
+        container_id: usize,
+        data: Vec<u8>,
+        qos: QoS,
+    },
+    Subscribe {
+        container_id: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -574,6 +583,27 @@ impl SyncStorage {
                             .lock()
                             .await
                             .publish(&topic, QoS::AtMostOnce, true, data.as_bytes())
+                            .await?;
+                    }
+                    QueueMessage::PublishOnChannel {
+                        container_id,
+                        data,
+                        qos,
+                    } => {
+                        trace!("Publishing channel {}", container_id);
+                        let topic = {
+                            if let Some(inner) = storage3.upgrade() {
+                                let inner = inner.lock().unwrap();
+                                let container = &inner.containers[container_id];
+                                container.topic().to_string()
+                            } else {
+                                break;
+                            }
+                        };
+                        client
+                            .lock()
+                            .await
+                            .publish(&topic, qos, false, &data)
                             .await?;
                     }
                     QueueMessage::Subscribe { container_id } => {

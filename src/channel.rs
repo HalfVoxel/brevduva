@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+use embedded_svc::mqtt::client::QoS;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{blocker, Container, QueueMessage};
@@ -77,12 +78,28 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
         }
     }
 
-    pub fn on_change(&self, f: impl Fn(&T) + Send + Sync + 'static) {
+    pub fn on_recv(&self, f: impl Fn(&T) + Send + Sync + 'static) {
         let mut callback = self.callback.lock().unwrap();
         *callback = Some(Box::new(f));
     }
 
     pub async fn wait_for_sync(&self) {
         self.up_to_date.wait().await;
+    }
+
+    pub async fn send(&self, message: T) {
+        if self.read_only {
+            panic!("Cannot send to a read-only channel");
+        }
+
+        let message = postcard::to_stdvec(&message).unwrap();
+        self.queue
+            .send(QueueMessage::PublishOnChannel {
+                container_id: self.id,
+                data: message,
+                qos: QoS::AtMostOnce,
+            })
+            .await
+            .unwrap();
     }
 }
