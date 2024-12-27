@@ -5,6 +5,11 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{blocker, Container, QueueMessage};
 
+enum SerializationFormat {
+    Postcard,
+    Json,
+}
+
 pub struct Channel<T> {
     id: usize,
     topic: String,
@@ -13,6 +18,7 @@ pub struct Channel<T> {
     up_to_date: blocker::Blocker,
     read_only: bool,
     has_received_message: Mutex<bool>,
+    format: SerializationFormat,
 }
 
 #[async_trait::async_trait]
@@ -22,7 +28,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
     }
 
     async fn on_message(&self, payload: &'_ [u8]) -> Result<(), crate::BrevduvaError> {
-        let message: T = postcard::from_bytes(payload)?;
+        let message: T = match self.format {
+            SerializationFormat::Postcard => postcard::from_bytes(payload)?,
+            SerializationFormat::Json => serde_json::from_slice(payload)?,
+        };
         *self.has_received_message.lock().unwrap() = true;
 
         self.channel.send(message).await.unwrap();
@@ -75,6 +84,11 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
             has_received_message: Mutex::new(false),
             read_only,
             channel: sender,
+            format: if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Vec<u8>>() {
+                SerializationFormat::Postcard
+            } else {
+                SerializationFormat::Json
+            },
         }
     }
 
@@ -87,7 +101,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
             panic!("Cannot send to a read-only channel");
         }
 
-        let message = postcard::to_stdvec(&message).unwrap();
+        let message = match self.format {
+            SerializationFormat::Postcard => postcard::to_stdvec(&message).unwrap(),
+            SerializationFormat::Json => serde_json::to_vec(&message).unwrap(),
+        };
         self.queue
             .send(QueueMessage::PublishOnChannel {
                 container_id: self.id,
