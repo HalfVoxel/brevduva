@@ -3,11 +3,17 @@ use std::sync::Mutex;
 use embedded_svc::mqtt::client::QoS;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{blocker, Container, QueueMessage};
+use crate::{
+    blocker,
+    raw_deserializer::{self},
+    Container, QueueMessage,
+};
 
-enum SerializationFormat {
+#[derive(Copy, Clone)]
+pub(crate) enum SerializationFormat {
     Postcard,
     Json,
+    String,
 }
 
 pub struct Channel<T> {
@@ -28,17 +34,14 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
     }
 
     async fn on_message(&self, payload: &'_ [u8]) -> Result<(), crate::BrevduvaError> {
-        let message: T = match self.format {
-            SerializationFormat::Postcard => postcard::from_bytes(payload)?,
-            SerializationFormat::Json => serde_json::from_slice(payload)?,
-        };
+        let message: T = deserialize_from_slice(payload, self.format)?;
         *self.has_received_message.lock().unwrap() = true;
 
         self.channel.send(message).await.unwrap();
         Ok(())
     }
 
-    fn serialize(&self) -> String {
+    fn serialize(&self) -> Vec<u8> {
         panic!("Cannot serialize a channel");
     }
 
@@ -52,6 +55,38 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
 
     fn read_only(&self) -> bool {
         self.read_only
+    }
+}
+
+pub(crate) fn auto_serialization_format<T: 'static>() -> SerializationFormat {
+    if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Vec<u8>>() {
+        SerializationFormat::Postcard
+    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() {
+        SerializationFormat::String
+    } else {
+        SerializationFormat::Json
+    }
+}
+
+pub(crate) fn serialize_to_vec<T: Serialize>(
+    value: &T,
+    format: SerializationFormat,
+) -> Result<Vec<u8>, crate::BrevduvaError> {
+    match format {
+        SerializationFormat::Postcard => Ok(postcard::to_stdvec(value)?),
+        SerializationFormat::Json => Ok(serde_json::to_vec(value)?),
+        SerializationFormat::String => Ok(crate::raw_serializer::to_vec(value)?),
+    }
+}
+
+pub(crate) fn deserialize_from_slice<T: DeserializeOwned>(
+    input: &[u8],
+    format: SerializationFormat,
+) -> Result<T, crate::BrevduvaError> {
+    match format {
+        SerializationFormat::Postcard => Ok(postcard::from_bytes(input)?),
+        SerializationFormat::Json => Ok(serde_json::from_slice(input)?),
+        SerializationFormat::String => Ok(raw_deserializer::from_slice(input)?),
     }
 }
 
@@ -84,11 +119,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
             has_received_message: Mutex::new(false),
             read_only,
             channel: sender,
-            format: if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Vec<u8>>() {
-                SerializationFormat::Postcard
-            } else {
-                SerializationFormat::Json
-            },
+            format: auto_serialization_format::<T>(),
         }
     }
 
@@ -101,14 +132,11 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
             panic!("Cannot send to a read-only channel");
         }
 
-        let message = match self.format {
-            SerializationFormat::Postcard => postcard::to_stdvec(&message).unwrap(),
-            SerializationFormat::Json => serde_json::to_vec(&message).unwrap(),
-        };
+        let payload = serialize_to_vec(&message, self.format).unwrap();
         self.queue
             .send(QueueMessage::PublishOnChannel {
                 container_id: self.id,
-                data: message,
+                data: payload,
                 qos: QoS::AtMostOnce,
             })
             .await

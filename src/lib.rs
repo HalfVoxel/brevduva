@@ -1,9 +1,10 @@
 // #![deny(clippy::future_not_send)]
 mod blocker;
 pub mod channel;
+mod raw_deserializer;
+mod raw_serializer;
 
 use core::panic;
-use std::any::Any;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::atomic::AtomicBool;
@@ -39,7 +40,7 @@ struct SyncStorageInner {
 trait Container: Send + Sync + 'static {
     fn topic(&self) -> &str;
     async fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError>;
-    fn serialize(&self) -> String;
+    fn serialize(&self) -> Vec<u8>;
     fn has_received_message(&self) -> bool;
     fn up_to_date(&self) -> &blocker::Blocker;
     fn read_only(&self) -> bool;
@@ -88,6 +89,10 @@ pub enum BrevduvaError {
     MessageDeserialize(#[from] serde_json::Error),
     #[error("Failed to deserialize message")]
     StringDeserialize(#[from] std::string::FromUtf8Error),
+    #[error("Failed to deserialize message")]
+    Utf8Error(#[from] std::str::Utf8Error),
+    #[error("Failed to deserialize message")]
+    StringDeserialize2(#[from] raw_deserializer::RawError),
     #[error("Failed to deserialize postcard message")]
     MessageDeserializePostcard(#[from] postcard::Error),
 }
@@ -209,14 +214,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
 
     async fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError> {
         // For raw strings, we treat the payload as a string directly, instead of json
-        let d = if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() {
-            let s = Box::new(
-                String::from_utf8(payload.to_vec()).map_err(BrevduvaError::StringDeserialize)?,
-            );
-            *(s as Box<dyn Any>).downcast::<T>().unwrap()
-        } else {
-            serde_json::from_slice(payload).map_err(BrevduvaError::MessageDeserialize)?
-        };
+        let d = channel::deserialize_from_slice(
+            payload,
+            crate::channel::auto_serialization_format::<T>(),
+        )?;
         let mut data = self.data.lock().unwrap();
         *data = Some(d);
         trace!("Deserialized message: {data:?}");
@@ -232,20 +233,9 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
         *self.has_received_message.lock().unwrap()
     }
 
-    fn serialize(&self) -> String {
+    fn serialize(&self) -> Vec<u8> {
         let data = self.data.lock().unwrap();
-        let s = serde_json::to_string(&*data).unwrap();
-
-        if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() {
-            // Convert a json string to a raw string
-            s.strip_prefix('"')
-                .unwrap()
-                .strip_suffix('"')
-                .unwrap()
-                .to_string()
-        } else {
-            s
-        }
+        channel::serialize_to_vec(&*data, crate::channel::auto_serialization_format::<T>()).unwrap()
     }
 }
 
@@ -660,7 +650,7 @@ impl SyncStorage {
                         client
                             .lock()
                             .await
-                            .publish(&topic, QoS::AtMostOnce, true, data.as_bytes())
+                            .publish(&topic, QoS::AtMostOnce, true, &data)
                             .await?;
                     }
                     QueueMessage::PublishOnChannel {
