@@ -249,6 +249,53 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
     }
 }
 
+fn matches_topic(topic_filter: &str, topic: &str) -> bool {
+    // let cf = topic_filter.chars();
+    let mut c2 = topic.chars().peekable();
+
+    for c1 in topic_filter.chars() {
+        match c1 {
+            '+' => loop {
+                match c2.peek() {
+                    Some('/') => {
+                        break;
+                    }
+                    Some(_) => {
+                        c2.next();
+                    }
+                    None => {
+                        return false;
+                    }
+                }
+            },
+            '#' => {
+                return true;
+            }
+            _ => {
+                if Some(c1) != c2.next() {
+                    return false;
+                }
+            }
+        }
+    }
+
+    c2.peek().is_none()
+}
+
+#[test]
+fn test_matches_topic() {
+    assert!(matches_topic("a/b/c", "a/b/c"));
+    assert!(!matches_topic("a/b/c", "a/b/c/d"));
+    assert!(matches_topic("a/+/c", "a/b/c"));
+    assert!(matches_topic("aaabbbcccddd/+/c", "aaabbbcccddd/b/c"));
+    assert!(matches_topic("aa/#", "aa/b"));
+    assert!(matches_topic("aa/#", "aa/b/c"));
+    assert!(!matches_topic("aa/#", "bb/aa/b/c"));
+    assert!(!matches_topic("a/b/c", ""));
+    assert!(!matches_topic("", "a"));
+    assert!(matches_topic("", ""));
+}
+
 impl SyncStorage {
     #[cfg(feature = "embedded")]
     pub async fn new<'a>(
@@ -554,26 +601,26 @@ impl SyncStorage {
                             }
                             continue;
                         } else {
-                            let container = {
+                            let containers = {
                                 if let Some(inner) = storage2.upgrade() {
                                     let inner = inner.lock().unwrap();
                                     inner
                                         .containers
                                         .iter()
-                                        .find(|c| c.topic() == topic)
+                                        .filter(|c| matches_topic(c.topic(), topic))
                                         .cloned()
+                                        .collect::<Vec<_>>()
                                 } else {
                                     break;
                                 }
                             };
-                            match container {
-                                Some(container) => {
+                            if containers.is_empty() {
+                                warn!("Received message on unknown topic: \"{}\"", topic);
+                            } else {
+                                for container in containers {
                                     if let Err(e) = container.on_message(data).await {
                                         error!("{e}. Ignoring message on topic \"{topic}\"");
                                     }
-                                }
-                                None => {
-                                    warn!("Received message on unknown topic: \"{}\"", topic);
                                 }
                             }
                         }
