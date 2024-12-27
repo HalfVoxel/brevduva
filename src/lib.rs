@@ -34,9 +34,10 @@ struct SyncStorageInner {
     queue_sender: tokio::sync::mpsc::Sender<QueueMessage>,
 }
 
+#[async_trait::async_trait]
 trait Container: Send + Sync + 'static {
     fn topic(&self) -> &str;
-    fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError>;
+    async fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError>;
     fn serialize(&self) -> String;
     fn has_received_message(&self) -> bool;
     fn up_to_date(&self) -> &blocker::Blocker;
@@ -187,6 +188,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
     }
 }
 
+#[async_trait::async_trait]
 impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> Container
     for SyncedContainer<T>
 {
@@ -202,7 +204,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
         &self.up_to_date
     }
 
-    fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError> {
+    async fn on_message(&self, payload: &[u8]) -> Result<(), BrevduvaError> {
         let d = serde_json::from_slice(payload).map_err(BrevduvaError::MessageDeserialize)?;
         let mut data = self.data.lock().unwrap();
         *data = Some(d);
@@ -542,7 +544,7 @@ impl SyncStorage {
                             };
                             match container {
                                 Some(container) => {
-                                    if let Err(e) = container.on_message(data) {
+                                    if let Err(e) = container.on_message(data).await {
                                         error!("{e}. Ignoring message on topic \"{topic}\"");
                                     }
                                 }

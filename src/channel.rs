@@ -15,21 +15,17 @@ pub struct Channel<T> {
     has_received_message: Mutex<bool>,
 }
 
+#[async_trait::async_trait]
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Channel<T> {
     fn topic(&self) -> &str {
         &self.topic
     }
 
-    fn on_message(&self, payload: &[u8]) -> Result<(), crate::BrevduvaError> {
+    async fn on_message(&self, payload: &'_ [u8]) -> Result<(), crate::BrevduvaError> {
         let message: T = postcard::from_bytes(payload)?;
         *self.has_received_message.lock().unwrap() = true;
-        let channel = self.channel.clone();
 
-        // Ideally on_message should be async, but that messes with traits.
-        // Could maybe use async_trait
-        tokio::spawn(async move {
-            channel.send(message).await.unwrap();
-        });
+        self.channel.send(message).await.unwrap();
         Ok(())
     }
 
