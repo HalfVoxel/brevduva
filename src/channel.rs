@@ -61,8 +61,8 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
 pub(crate) fn auto_serialization_format<T: 'static>() -> SerializationFormat {
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Vec<u8>>() {
         SerializationFormat::Postcard
-    } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() {
-        SerializationFormat::String
+    // } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<String>() {
+    //     SerializationFormat::String
     } else {
         SerializationFormat::Json
     }
