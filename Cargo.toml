@@ -5,10 +5,10 @@ edition = "2021"
 build = "build.rs"
 
 [dependencies]
-postcard = { version = "1.1", features = ["use-std"] }
-tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+tokio = { version = "1", default-features = false, features = ["sync"] }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git", default-features = false, optional = true }
-embedded-svc = "0.28"
+embedded-svc = { version = "0.28", default-features = false }
 log = "0.4"
 serde_json = "1"
 serde = { version = "1", default-features = false }
