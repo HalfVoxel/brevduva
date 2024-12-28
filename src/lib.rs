@@ -45,6 +45,7 @@ trait Container: Send + Sync + 'static {
     fn has_received_message(&self) -> bool;
     fn up_to_date(&self) -> &blocker::Blocker;
     fn read_only(&self) -> bool;
+    fn can_sync_state(&self) -> bool;
 }
 
 #[derive(Debug)]
@@ -207,6 +208,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
 
     fn read_only(&self) -> bool {
         self.read_only
+    }
+
+    fn can_sync_state(&self) -> bool {
+        !self.read_only()
     }
 
     fn up_to_date(&self) -> &blocker::Blocker {
@@ -418,7 +423,7 @@ impl SyncStorage {
         }
 
         for (id, container) in containers.iter().enumerate() {
-            if !container.has_received_message() && !container.read_only() {
+            if container.can_sync_state() && !container.has_received_message() {
                 trace!(
                     "Container {} did not have server state. Pushing our state to the server",
                     container.topic()

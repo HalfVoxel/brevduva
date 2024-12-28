@@ -68,6 +68,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
     fn read_only(&self) -> bool {
         self.read_only
     }
+
+    fn can_sync_state(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn auto_serialization_format<T: 'static>() -> SerializationFormat {
