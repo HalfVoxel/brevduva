@@ -6,7 +6,12 @@ build = "build.rs"
 
 [dependencies]
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
-tokio = { version = "1", default-features = false, features = ["sync"] }
+tokio = { version = "1", default-features = false, features = [
+    "sync",
+    "rt",
+    "macros",
+    "time",
+] }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git", default-features = false, optional = true }
 embedded-svc = { version = "0.28", default-features = false }
 log = "0.4"

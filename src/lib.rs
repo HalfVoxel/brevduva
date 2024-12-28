@@ -752,7 +752,7 @@ impl SyncStorage {
                                 error!("Failed to subscribe to topic \"{topic}\": {e:?}, retrying...");
 
                                 // Re-try in 0.5s
-                                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                             }
 
                             if topic != *meta_topic {
