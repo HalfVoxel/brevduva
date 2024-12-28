@@ -96,8 +96,6 @@ pub enum BrevduvaError {
     StringDeserialize2(#[from] raw_deserializer::RawError),
     #[error("Failed to deserialize postcard message")]
     MessageDeserializePostcard(#[from] postcard::Error),
-    #[error("Container topic '{0}' cannot contain characters like +, # or $")]
-    ContainerTopicCannotHaveWildcard(String),
 }
 
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> SyncedContainer<T> {
@@ -485,16 +483,13 @@ impl SyncStorage {
             }
 
             let has_wildcard = topic.contains('+') || topic.contains('#') || topic.contains('$');
-            if has_wildcard {
-                return Err(BrevduvaError::ContainerTopicCannotHaveWildcard(topic));
-            }
 
             let container = Arc::new(SyncedContainer::new(
                 inner.containers.len(),
                 topic,
                 inital,
                 inner.queue_sender.clone(),
-                false,
+                has_wildcard,
                 None,
             ));
             inner.containers.push(container.clone());
