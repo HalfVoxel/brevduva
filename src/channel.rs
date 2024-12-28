@@ -49,7 +49,9 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Container for Chan
                 message,
             })
             .await
-            .unwrap();
+            .ok();
+
+        // TODO: Unsubscribe if channel is closed, and read-only?
         Ok(())
     }
 
