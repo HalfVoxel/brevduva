@@ -470,7 +470,7 @@ impl SyncStorage {
     > {
         let topic = format!("sync/{}", name);
 
-        let (sender, receiver) = tokio::sync::mpsc::channel::<ChannelMessage<T>>(1);
+        let (sender, receiver) = tokio::sync::mpsc::channel::<ChannelMessage<T>>(8);
         let container = {
             let mut inner = self.inner.lock().unwrap();
             if inner.containers.iter().any(|c| c.topic() == topic) {
