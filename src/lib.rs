@@ -11,8 +11,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use channel::auto_serialization_format;
 use channel::Channel;
 use channel::ChannelMessage;
+use channel::SerializationFormat;
 use embedded_svc::mqtt::client::asynch;
 use embedded_svc::mqtt::client::Event;
 use embedded_svc::mqtt::client::EventPayload;
@@ -81,6 +83,7 @@ pub struct SyncedContainer<T> {
     up_to_date: blocker::Blocker,
     has_received_message: Mutex<bool>,
     read_only: bool,
+    format: crate::channel::SerializationFormat,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -107,6 +110,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
         queue: tokio::sync::mpsc::Sender<QueueMessage>,
         read_only: bool,
         callback: Option<Box<dyn Fn(&T) + Send + Sync>>,
+        format: SerializationFormat,
     ) -> Self {
         Self {
             id,
@@ -117,6 +121,11 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
             has_received_message: Mutex::new(false),
             read_only,
             callback: Mutex::new(callback),
+            format: if format == SerializationFormat::Auto {
+                auto_serialization_format::<T>()
+            } else {
+                format
+            },
         }
     }
 
@@ -220,10 +229,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
 
     async fn on_message(&self, _topic: &str, payload: &[u8]) -> Result<(), BrevduvaError> {
         // For raw strings, we treat the payload as a string directly, instead of json
-        let d = channel::deserialize_from_slice(
-            payload,
-            crate::channel::auto_serialization_format::<T>(),
-        )?;
+        let d = channel::deserialize_from_slice(payload, self.format)?;
         let mut data = self.data.lock().unwrap();
         *data = Some(d);
         trace!("Deserialized message: {data:?}");
@@ -241,7 +247,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
 
     fn serialize(&self) -> Vec<u8> {
         let data = self.data.lock().unwrap();
-        channel::serialize_to_vec(&*data, crate::channel::auto_serialization_format::<T>()).unwrap()
+        channel::serialize_to_vec(&*data, self.format).unwrap()
     }
 }
 
@@ -334,12 +340,6 @@ impl SyncStorage {
             })),
         };
 
-        let status = storage
-            .add_container(&online_status_topic, "offline".to_string())
-            .await
-            .unwrap();
-        status.set("online".to_string()).await;
-
         let storage2 = storage.clone();
         let (client, connection) = EspAsyncMqttClient::new(host, &mqtt_config).unwrap();
         tokio::spawn(async move {
@@ -347,6 +347,8 @@ impl SyncStorage {
                 .await
                 .unwrap()
         });
+
+        storage.publish_online_status(online_status_topic).await;
 
         storage
     }
@@ -397,12 +399,6 @@ impl SyncStorage {
             })),
         };
 
-        let status = storage
-            .add_container(&online_status_topic, "offline".to_string())
-            .await
-            .unwrap();
-        status.set("online".to_string()).await;
-
         let storage2 = storage.clone();
         tokio::spawn(async move {
             Self::start(client, connection, queue_receiver, storage2)
@@ -410,7 +406,32 @@ impl SyncStorage {
                 .unwrap()
         });
 
+        storage.publish_online_status(online_status_topic).await;
+
         storage
+    }
+
+    async fn publish_online_status(&self, online_status_topic: String) {
+        let status = self
+            .add_container(
+                &online_status_topic,
+                "offline".to_string(),
+                SerializationFormat::Json,
+            )
+            .await
+            .unwrap();
+        status.set("online".to_string()).await;
+
+        // If status is ever changed to offline, bring it back online
+        let status2 = status.clone();
+        status.on_change(move |s| {
+            if s == "offline" {
+                let status = status2.clone();
+                tokio::spawn(async move {
+                    status.set("online".to_string()).await;
+                });
+            }
+        });
     }
 
     pub async fn wait_for_sync(&self) {
@@ -439,6 +460,7 @@ impl SyncStorage {
     pub async fn add_channel<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
         &self,
         name: &str,
+        format: crate::channel::SerializationFormat,
     ) -> Result<
         (
             Arc<crate::channel::Channel<T>>,
@@ -463,6 +485,7 @@ impl SyncStorage {
                 inner.queue_sender.clone(),
                 read_only,
                 sender,
+                format,
             ));
             inner.containers.push(container.clone());
             container
@@ -479,6 +502,7 @@ impl SyncStorage {
         &self,
         name: &str,
         inital: T,
+        format: crate::channel::SerializationFormat,
     ) -> Result<Arc<SyncedContainer<T>>, BrevduvaError> {
         let topic = format!("sync/{}", name);
         let container = {
@@ -496,6 +520,7 @@ impl SyncStorage {
                 inner.queue_sender.clone(),
                 has_wildcard,
                 None,
+                format,
             ));
             inner.containers.push(container.clone());
             container

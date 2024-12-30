@@ -9,11 +9,18 @@ use crate::{
     Container, QueueMessage,
 };
 
-#[derive(Copy, Clone)]
-pub(crate) enum SerializationFormat {
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum SerializationFormat {
+    Auto,
     Postcard,
     Json,
     String,
+}
+
+impl Default for SerializationFormat {
+    fn default() -> Self {
+        SerializationFormat::Auto
+    }
 }
 
 pub struct Channel<T: 'static> {
@@ -91,6 +98,7 @@ pub(crate) fn serialize_to_vec<T: Serialize>(
     format: SerializationFormat,
 ) -> Result<Vec<u8>, crate::BrevduvaError> {
     match format {
+        SerializationFormat::Auto => panic!("Cannot serialize with auto format"),
         SerializationFormat::Postcard => Ok(postcard::to_stdvec(value)?),
         SerializationFormat::Json => Ok(serde_json::to_vec(value)?),
         SerializationFormat::String => Ok(crate::raw_serializer::to_vec(value)?),
@@ -102,6 +110,7 @@ pub(crate) fn deserialize_from_slice<T: DeserializeOwned>(
     format: SerializationFormat,
 ) -> Result<T, crate::BrevduvaError> {
     match format {
+        SerializationFormat::Auto => panic!("Cannot deserialize with auto format"),
         SerializationFormat::Postcard => Ok(postcard::from_bytes(input)?),
         SerializationFormat::Json => Ok(serde_json::from_slice(input)?),
         SerializationFormat::String => Ok(raw_deserializer::from_slice(input)?),
@@ -128,6 +137,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
         queue: tokio::sync::mpsc::Sender<QueueMessage>,
         read_only: bool,
         sender: tokio::sync::mpsc::Sender<ChannelMessage<T>>,
+        format: SerializationFormat,
     ) -> Self {
         Self {
             id,
@@ -137,7 +147,11 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
             has_received_message: Mutex::new(false),
             read_only,
             channel: sender,
-            format: auto_serialization_format::<T>(),
+            format: if format == SerializationFormat::Auto {
+                auto_serialization_format::<T>()
+            } else {
+                format
+            },
         }
     }
 
