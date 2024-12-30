@@ -174,4 +174,19 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Channel<T> {
             .await
             .unwrap();
     }
+
+    pub fn blocking_send(&self, message: T) {
+        if self.read_only {
+            panic!("Cannot send to a read-only channel");
+        }
+
+        let payload = serialize_to_vec(&message, self.format).unwrap();
+        self.queue
+            .blocking_send(QueueMessage::PublishOnChannel {
+                container_id: self.id,
+                data: payload,
+                qos: QoS::AtMostOnce,
+            })
+            .unwrap();
+    }
 }
