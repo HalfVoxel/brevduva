@@ -31,4 +31,4 @@ std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std"]
 alloc = ["esp-idf-svc/alloc"]
 
 [build-dependencies]
-embuild = { version = "0.32", optional = true }
+embuild = { version = "0.33", optional = true, features = ["espidf"] }
