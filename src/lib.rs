@@ -5,7 +5,6 @@ mod raw_deserializer;
 mod raw_serializer;
 
 use core::panic;
-use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -74,6 +73,13 @@ enum MetaMessage {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadWriteMode {
+    ReadOnly,
+    ReadWrite,
+    Driven,
+}
+
 pub struct SyncedContainer<T> {
     id: usize,
     topic: String,
@@ -82,7 +88,7 @@ pub struct SyncedContainer<T> {
     queue: tokio::sync::mpsc::Sender<QueueMessage>,
     up_to_date: blocker::Blocker,
     has_received_message: Mutex<bool>,
-    read_only: bool,
+    mode: ReadWriteMode,
     format: crate::channel::SerializationFormat,
 }
 
@@ -100,6 +106,16 @@ pub enum BrevduvaError {
     StringDeserialize2(#[from] raw_deserializer::RawError),
     #[error("Failed to deserialize postcard message")]
     MessageDeserializePostcard(#[from] postcard::Error),
+    #[error("Cannot set data on driven container")]
+    DrivenContainer,
+}
+
+fn hash_equal<T: std::hash::Hash>(a: &T, b: &T) -> bool {
+    let mut hash1 = std::collections::hash_map::DefaultHasher::new();
+    let mut hash2 = std::collections::hash_map::DefaultHasher::new();
+    a.hash(&mut hash1);
+    b.hash(&mut hash2);
+    hash1.finish() == hash2.finish()
 }
 
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> SyncedContainer<T> {
@@ -108,7 +124,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
         topic: String,
         data: T,
         queue: tokio::sync::mpsc::Sender<QueueMessage>,
-        read_only: bool,
+        mode: ReadWriteMode,
         callback: Option<Box<dyn Fn(&T) + Send + Sync>>,
         format: SerializationFormat,
     ) -> Self {
@@ -117,9 +133,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
             topic,
             data: Mutex::new(Some(data)),
             queue,
-            up_to_date: blocker::Blocker::new(),
+            up_to_date: if mode == ReadWriteMode::Driven {
+                blocker::Blocker::new_unblocked()
+            } else {
+                blocker::Blocker::new()
+            },
             has_received_message: Mutex::new(false),
-            read_only,
+            mode,
             callback: Mutex::new(callback),
             format: if format == SerializationFormat::Auto {
                 auto_serialization_format::<T>()
@@ -155,7 +175,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
     where
         F: FnOnce(&mut T) + Send,
     {
-        if self.read_only {
+        if self.mode == ReadWriteMode::ReadOnly {
             panic!("Cannot set data on a read-only container");
         }
 
@@ -178,19 +198,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
     }
 
     pub async fn set(&self, data: T) {
-        if self.read_only {
+        if self.mode == ReadWriteMode::ReadOnly {
             panic!("Cannot set data on a read-only container");
         }
 
         {
             let mut d = self.data.lock().unwrap();
-            let mut hash1 = std::collections::hash_map::DefaultHasher::new();
-            let mut hash2 = std::collections::hash_map::DefaultHasher::new();
-            let k1 = Some(&data);
-            let k2 = d.as_ref();
-            k1.hash(&mut hash1);
-            k2.hash(&mut hash2);
-            if hash1.finish() == hash2.finish() {
+            if hash_equal(&Some(&data), &d.as_ref()) {
                 return;
             }
             *d = Some(data);
@@ -208,15 +222,16 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static + std::hash::Hash> 
 }
 
 #[async_trait::async_trait]
-impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> Container
-    for SyncedContainer<T>
+impl<
+        T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static,
+    > Container for SyncedContainer<T>
 {
     fn topic(&self) -> &str {
         &self.topic
     }
 
     fn read_only(&self) -> bool {
-        self.read_only
+        self.mode == ReadWriteMode::ReadOnly
     }
 
     fn can_sync_state(&self) -> bool {
@@ -229,7 +244,24 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static> 
 
     async fn on_message(&self, _topic: &str, payload: &[u8]) -> Result<(), BrevduvaError> {
         // For raw strings, we treat the payload as a string directly, instead of json
-        let d = channel::deserialize_from_slice(payload, self.format)?;
+        let d: T = channel::deserialize_from_slice(payload, self.format)?;
+
+        if self.mode == ReadWriteMode::Driven {
+            if hash_equal(&self.data.lock().unwrap().as_ref(), &Some(&d)) {
+                // No change
+                return Ok(());
+            } else {
+                trace!("Received message on driven container. Ignoring and pushing our state to the server");
+                self.queue
+                    .send(QueueMessage::SyncContainer {
+                        container_id: self.id,
+                    })
+                    .await
+                    .unwrap();
+                return Err(BrevduvaError::DrivenContainer);
+            }
+        }
+
         let mut data = self.data.lock().unwrap();
         *data = Some(d);
         trace!("Deserialized message: {data:?}");
@@ -412,26 +444,14 @@ impl SyncStorage {
     }
 
     async fn publish_online_status(&self, online_status_topic: String) {
-        let status = self
-            .add_container(
-                &online_status_topic,
-                "offline".to_string(),
-                SerializationFormat::Json,
-            )
-            .await
-            .unwrap();
-        status.set("online".to_string()).await;
-
-        // If status is ever changed to offline, bring it back online
-        let status2 = status.clone();
-        status.on_change(move |s| {
-            if s == "offline" {
-                let status = status2.clone();
-                tokio::spawn(async move {
-                    status.set("online".to_string()).await;
-                });
-            }
-        });
+        self.add_container_with_mode(
+            &online_status_topic,
+            "online".to_string(),
+            SerializationFormat::Json,
+            ReadWriteMode::Driven,
+        )
+        .await
+        .unwrap();
     }
 
     pub async fn wait_for_sync(&self) {
@@ -504,6 +524,19 @@ impl SyncStorage {
         inital: T,
         format: crate::channel::SerializationFormat,
     ) -> Result<Arc<SyncedContainer<T>>, BrevduvaError> {
+        self.add_container_with_mode(name, inital, format, ReadWriteMode::ReadWrite)
+            .await
+    }
+
+    pub async fn add_container_with_mode<
+        T: Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + std::hash::Hash + 'static,
+    >(
+        &self,
+        name: &str,
+        inital: T,
+        format: crate::channel::SerializationFormat,
+        mode: ReadWriteMode,
+    ) -> Result<Arc<SyncedContainer<T>>, BrevduvaError> {
         let topic = format!("sync/{}", name);
         let container = {
             let mut inner = self.inner.lock().unwrap();
@@ -512,13 +545,16 @@ impl SyncStorage {
             }
 
             let has_wildcard = topic.contains('+') || topic.contains('#') || topic.contains('$');
+            if has_wildcard && mode != ReadWriteMode::ReadOnly {
+                panic!("Wildcard topics must be read-only");
+            }
 
             let container = Arc::new(SyncedContainer::new(
                 inner.containers.len(),
                 topic,
                 inital,
                 inner.queue_sender.clone(),
-                has_wildcard,
+                mode,
                 None,
                 format,
             ));
@@ -647,8 +683,12 @@ impl SyncStorage {
                                 warn!("Received message on unknown topic: \"{}\"", topic);
                             } else {
                                 for container in containers {
-                                    if let Err(e) = container.on_message(topic, data).await {
-                                        error!("{e}. Ignoring message on topic \"{topic}\"");
+                                    match container.on_message(topic, data).await {
+                                        Ok(()) => {}
+                                        Err(BrevduvaError::DrivenContainer) => {}
+                                        Err(e) => {
+                                            error!("{e}. Ignoring message on topic \"{topic}\"");
+                                        }
                                     }
                                 }
                             }

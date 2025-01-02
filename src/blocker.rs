@@ -14,6 +14,13 @@ impl Blocker {
         }
     }
 
+    pub fn new_unblocked() -> Self {
+        Self {
+            notify: Notify::new(),
+            blocked: Mutex::new(false),
+        }
+    }
+
     pub async fn wait(&self) {
         let mut blocked = self.blocked.lock().await;
         while *blocked {
