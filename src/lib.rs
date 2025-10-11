@@ -388,7 +388,7 @@ impl SyncStorage {
     #[cfg(feature = "edge-mqtt")]
     pub async fn new<'a>(
         client_id: &'a str,
-        host: &'static str,
+        host: &str,
         username: &'a str,
         password: &'a str,
         persistance: SessionPersistance,
@@ -682,8 +682,9 @@ impl SyncStorage {
                             if containers.is_empty() {
                                 warn!("Received message on unknown topic: \"{}\"", topic);
                             } else {
+                                let stripped_topic = topic.strip_prefix("sync/").unwrap_or(topic);
                                 for container in containers {
-                                    match container.on_message(topic, data).await {
+                                    match container.on_message(&stripped_topic, data).await {
                                         Ok(()) => {}
                                         Err(BrevduvaError::DrivenContainer) => {}
                                         Err(e) => {
@@ -755,7 +756,7 @@ impl SyncStorage {
                     }
                     QueueMessage::Subscribe { container_id } => {
                         if !first_connect.load(Ordering::Relaxed) {
-                            trace!("Not connected, skipping subscribe");
+                            trace!("Not connected, skipping subscribe. Will subscribe when connected");
                             continue;
                         }
 
