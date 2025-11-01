@@ -493,11 +493,12 @@ impl SyncStorage {
         let (sender, receiver) = tokio::sync::mpsc::channel::<ChannelMessage<T>>(8);
         let container = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.containers.iter().any(|c| c.topic() == topic) {
+            let read_only = topic.contains('+') || topic.contains('#') || topic.contains('$');
+
+            if !read_only && inner.containers.iter().any(|c| c.topic() == topic) {
+                // Cannot have multiple read-write channels with the same name
                 return Err(BrevduvaError::ContainerAlreadyExists(name.to_string()));
             }
-
-            let read_only = topic.contains('+') || topic.contains('#') || topic.contains('$');
 
             let container = Arc::new(Channel::new(
                 inner.containers.len(),
